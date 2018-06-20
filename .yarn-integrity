@@ -1,9 +1,11 @@
 {
-  "nodeVersion": "v8.9.2",
+  "systemParams": "darwin-x64-57",
   "modulesFolders": [
     "node_modules"
   ],
-  "flags": [],
+  "flags": [
+    "production"
+  ],
   "linkedModules": [],
   "topLevelPatterns": [
     "@eins78/react-autocomplete@1.7.3-fork.1",
