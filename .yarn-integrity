@@ -1,5 +1,5 @@
 {
-  "systemParams": "darwin-x64-57",
+  "systemParams": "darwin-x64-64",
   "modulesFolders": [
     "node_modules"
   ],
@@ -1733,8 +1733,8 @@
     ],
     "node-sass@4.9.0": [
       "vendor",
-      "vendor/darwin-x64-57",
-      "vendor/darwin-x64-57/binding.node"
+      "vendor/darwin-x64-64",
+      "vendor/darwin-x64-64/binding.node"
     ]
   }
 }
