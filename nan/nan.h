@@ -13,7 +13,7 @@
  *
  * MIT License <https://github.com/nodejs/nan/blob/master/LICENSE.md>
  *
- * Version 2.10.0: current Node 9.8.0, Node 12: 0.12.18, Node 10: 0.10.48, iojs: 3.3.1
+ * Version 2.24.0: current Node 25.2.1, Node 0.12: 0.12.18, Node 0.10: 0.10.48, iojs: 3.3.1
  *
  * See https://github.com/nodejs/nan for the latest update to this file
  **********************************************************************************/
@@ -36,6 +36,22 @@
 #define NODE_7_0_MODULE_VERSION  51
 #define NODE_8_0_MODULE_VERSION  57
 #define NODE_9_0_MODULE_VERSION  59
+#define NODE_10_0_MODULE_VERSION 64
+#define NODE_11_0_MODULE_VERSION 67
+#define NODE_12_0_MODULE_VERSION 72
+#define NODE_13_0_MODULE_VERSION 79
+#define NODE_14_0_MODULE_VERSION 83
+#define NODE_15_0_MODULE_VERSION 88
+#define NODE_16_0_MODULE_VERSION 93
+#define NODE_17_0_MODULE_VERSION 102
+#define NODE_18_0_MODULE_VERSION 108
+#define NODE_19_0_MODULE_VERSION 111
+#define NODE_20_0_MODULE_VERSION 115
+#define NODE_21_0_MODULE_VERSION 120
+#define NODE_22_0_MODULE_VERSION 127
+#define NODE_23_0_MODULE_VERSION 131
+#define NODE_24_0_MODULE_VERSION 137
+#define NODE_25_0_MODULE_VERSION 141
 
 #ifdef _MSC_VER
 # define NAN_HAS_CPLUSPLUS_11 (_MSC_VER >= 1800)
@@ -90,6 +106,9 @@
 #endif
 
 namespace Nan {
+
+#define NAN_CONCAT(a, b) NAN_CONCAT_HELPER(a, b)
+#define NAN_CONCAT_HELPER(a, b) a##b
 
 #define NAN_INLINE inline  // TODO(bnoordhuis) Remove in v3.0.0.
 
@@ -148,9 +167,24 @@ namespace Nan {
 #define NAN_MODULE_INIT(name)                                                  \
     void name(Nan::ADDON_REGISTER_FUNCTION_ARGS_TYPE target)
 
+#if NODE_MAJOR_VERSION >= 10 || \
+    NODE_MAJOR_VERSION == 9 && NODE_MINOR_VERSION >= 3
+#define NAN_MODULE_WORKER_ENABLED(module_name, registration)                   \
+    extern "C" NODE_MODULE_EXPORT void                                         \
+      NAN_CONCAT(node_register_module_v, NODE_MODULE_VERSION)(                 \
+        v8::Local<v8::Object> exports, v8::Local<v8::Value> module,            \
+        v8::Local<v8::Context> context)                                        \
+    {                                                                          \
+        registration(exports);                                                 \
+    }
+#else
+#define NAN_MODULE_WORKER_ENABLED(module_name, registration)                   \
+    NODE_MODULE(module_name, registration)
+#endif
+
 //=== CallbackInfo =============================================================
 
-#include "nan_callbacks.h"  // NOLINT(build/include)
+#include "nan_callbacks.h"  // NOLINT(build/include_subdir)
 
 //==============================================================================
 
@@ -174,9 +208,21 @@ typedef v8::String::ExternalOneByteStringResource
 template<typename T>
 class NonCopyablePersistentTraits :
     public v8::NonCopyablePersistentTraits<T> {};
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 10 ||                     \
+  (V8_MAJOR_VERSION == 10 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 5))
+template<typename T> struct CopyablePersistentTraits {
+  typedef v8::Persistent<T, CopyablePersistentTraits<T> > CopyablePersistent;
+  static const bool kResetInDestructor = true;
+  template <typename S, typename M>
+  static NAN_INLINE void Copy(const v8::Persistent<S, M> &source,
+      CopyablePersistent *dest) {
+  }
+};
+#else
 template<typename T>
 class CopyablePersistentTraits :
     public v8::CopyablePersistentTraits<T> {};
+#endif
 
 template<typename T>
 class PersistentBase :
@@ -192,6 +238,70 @@ template<typename T, typename M = NonCopyablePersistentTraits<T> >
 class Persistent;
 #endif  // NODE_MODULE_VERSION
 
+template<typename T>
+class Maybe {
+ public:
+  inline bool IsNothing() const { return !has_value_; }
+  inline bool IsJust() const { return has_value_; }
+
+  inline T ToChecked() const { return FromJust(); }
+  inline void Check() const { FromJust(); }
+
+  inline bool To(T* out) const {
+    if (IsJust()) *out = value_;
+    return IsJust();
+  }
+
+  inline T FromJust() const {
+#if defined(V8_ENABLE_CHECKS)
+    assert(IsJust() && "FromJust is Nothing");
+#endif  // V8_ENABLE_CHECKS
+    return value_;
+  }
+
+  inline T FromMaybe(const T& default_value) const {
+    return has_value_ ? value_ : default_value;
+  }
+
+  inline bool operator==(const Maybe &other) const {
+    return (IsJust() == other.IsJust()) &&
+        (!IsJust() || FromJust() == other.FromJust());
+  }
+
+  inline bool operator!=(const Maybe &other) const {
+    return !operator==(other);
+  }
+
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 4 ||                      \
+  (V8_MAJOR_VERSION == 4 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 3))
+  // Allow implicit conversions from v8::Maybe<T> to Nan::Maybe<T>.
+  Maybe(const v8::Maybe<T>& that)  // NOLINT(runtime/explicit)
+    : has_value_(that.IsJust())
+    , value_(that.FromMaybe(T())) {}
+#endif
+
+ private:
+  Maybe() : has_value_(false) {}
+  explicit Maybe(const T& t) : has_value_(true), value_(t) {}
+  bool has_value_;
+  T value_;
+
+  template<typename U>
+  friend Maybe<U> Nothing();
+  template<typename U>
+  friend Maybe<U> Just(const U& u);
+};
+
+template<typename T>
+inline Maybe<T> Nothing() {
+  return Maybe<T>();
+}
+
+template<typename T>
+inline Maybe<T> Just(const T& t) {
+  return Maybe<T>(t);
+}
+
 #if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 4 ||                      \
   (V8_MAJOR_VERSION == 4 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 3))
 # include "nan_maybe_43_inl.h"  // NOLINT(build/include)
@@ -199,8 +309,8 @@ class Persistent;
 # include "nan_maybe_pre_43_inl.h"  // NOLINT(build/include)
 #endif
 
-#include "nan_converters.h"  // NOLINT(build/include)
-#include "nan_new.h"  // NOLINT(build/include)
+#include "nan_converters.h"  // NOLINT(build/include_subdir)
+#include "nan_new.h"  // NOLINT(build/include_subdir)
 
 #if NAUV_UVVERSION < 0x000b17
 #define NAUV_WORK_CB(func) \
@@ -322,15 +432,12 @@ template<typename P> class WeakCallbackInfo;
 
 namespace imp {
   static const size_t kMaxLength = 0x3fffffff;
-  // v8::String::REPLACE_INVALID_UTF8 was introduced
-  // in node.js v0.10.29 and v0.8.27.
-#if NODE_MAJOR_VERSION > 0 || \
-    NODE_MINOR_VERSION > 10 || \
-    NODE_MINOR_VERSION == 10 && NODE_PATCH_VERSION >= 29 || \
-    NODE_MINOR_VERSION == 8 && NODE_PATCH_VERSION >= 27
-  static const unsigned kReplaceInvalidUtf8 = v8::String::REPLACE_INVALID_UTF8;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 13 ||                     \
+  (V8_MAJOR_VERSION == 13 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 4))
+  static const unsigned kReplaceInvalidUtf8
+    = v8::String::WriteFlags::kReplaceInvalidUtf8;
 #else
-  static const unsigned kReplaceInvalidUtf8 = 0;
+  static const unsigned kReplaceInvalidUtf8 = v8::String::REPLACE_INVALID_UTF8;
 #endif
 }  // end of namespace imp
 
@@ -560,6 +667,16 @@ class AsyncResource {
 #endif
 };
 
+inline uv_loop_t* GetCurrentEventLoop() {
+#if NODE_MAJOR_VERSION >= 10 || \
+  NODE_MAJOR_VERSION == 9 && NODE_MINOR_VERSION >= 3 || \
+  NODE_MAJOR_VERSION == 8 && NODE_MINOR_VERSION >= 10
+    return node::GetCurrentEventLoop(v8::Isolate::GetCurrent());
+#else
+    return uv_default_loop();
+#endif
+}
+
 //============ =================================================================
 
 /* node 0.12  */
@@ -579,14 +696,21 @@ class AsyncResource {
     v8::Isolate::GetCurrent()->SetAddHistogramSampleFunction(cb);
   }
 
-#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 4 ||                      \
+#if defined(V8_MAJOR_VERSION) &&                                               \
+      (V8_MAJOR_VERSION > 12 ||                                                \
+       (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) &&                 \
+        V8_MINOR_VERSION >= 7))
+  NAN_DEPRECATED inline bool IdleNotification(int) {
+    return true;
+  }
+# elif defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 4 ||                   \
   (V8_MAJOR_VERSION == 4 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 3))
-  inline bool IdleNotification(int idle_time_in_ms) {
+  NAN_DEPRECATED inline bool IdleNotification(int idle_time_in_ms) {
     return v8::Isolate::GetCurrent()->IdleNotificationDeadline(
         idle_time_in_ms * 0.001);
   }
 # else
-  inline bool IdleNotification(int idle_time_in_ms) {
+  NAN_DEPRECATED inline bool IdleNotification(int idle_time_in_ms) {
     return v8::Isolate::GetCurrent()->IdleNotification(idle_time_in_ms);
   }
 #endif
@@ -1031,7 +1155,13 @@ class Utf8String {
       length_(0), str_(str_st_) {
     HandleScope scope;
     if (!from.IsEmpty()) {
+#if NODE_MAJOR_VERSION >= 10
+      v8::Local<v8::Context> context = GetCurrentContext();
+      v8::Local<v8::String> string =
+          from->ToString(context).FromMaybe(v8::Local<v8::String>());
+#else
       v8::Local<v8::String> string = from->ToString();
+#endif
       if (!string.IsEmpty()) {
         size_t len = 3 * string->Length() + 1;
         assert(len <= INT_MAX);
@@ -1039,9 +1169,39 @@ class Utf8String {
           str_ = static_cast<char*>(malloc(len));
           assert(str_ != 0);
         }
-        const int flags =
-            v8::String::NO_NULL_TERMINATION | imp::kReplaceInvalidUtf8;
-        length_ = string->WriteUtf8(str_, static_cast<int>(len), 0, flags);
+#if NODE_MAJOR_VERSION >= 11
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 13 ||                     \
+  (V8_MAJOR_VERSION == 13 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION >= 4))
+    length_ = string->WriteUtf8V2(v8::Isolate::GetCurrent(), str_,
+                                    static_cast<int>(len), imp::kReplaceInvalidUtf8);
+#else
+    const int flags =
+        v8::String::NO_NULL_TERMINATION | imp::kReplaceInvalidUtf8;
+    length_ = string->WriteUtf8(v8::Isolate::GetCurrent(), str_,
+                                    static_cast<int>(len), 0, flags);
+#endif
+
+#else
+        // See https://github.com/nodejs/nan/issues/832.
+        // Disable the warning as there is no way around it.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  const int flags =
+    v8::String::NO_NULL_TERMINATION | imp::kReplaceInvalidUtf8;
+  length_ = string->WriteUtf8(str_, static_cast<int>(len), 0, flags);
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+#endif  // NODE_MAJOR_VERSION < 11
         str_[length_] = '\0';
       }
     }
@@ -1404,11 +1564,23 @@ typedef void NAN_SETTER_RETURN_TYPE;
 
 typedef const PropertyCallbackInfo<v8::Value>&
     NAN_PROPERTY_GETTER_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_PROPERTY_GETTER_RETURN_TYPE;
+#else
 typedef void NAN_PROPERTY_GETTER_RETURN_TYPE;
+#endif
 
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef const PropertyCallbackInfo<void>&
+    NAN_PROPERTY_SETTER_ARGS_TYPE;
+typedef v8::Intercepted NAN_PROPERTY_SETTER_RETURN_TYPE;
+#else
 typedef const PropertyCallbackInfo<v8::Value>&
     NAN_PROPERTY_SETTER_ARGS_TYPE;
 typedef void NAN_PROPERTY_SETTER_RETURN_TYPE;
+#endif
 
 typedef const PropertyCallbackInfo<v8::Array>&
     NAN_PROPERTY_ENUMERATOR_ARGS_TYPE;
@@ -1416,29 +1588,68 @@ typedef void NAN_PROPERTY_ENUMERATOR_RETURN_TYPE;
 
 typedef const PropertyCallbackInfo<v8::Boolean>&
     NAN_PROPERTY_DELETER_ARGS_TYPE;
+
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_PROPERTY_DELETER_RETURN_TYPE;
+#else
 typedef void NAN_PROPERTY_DELETER_RETURN_TYPE;
+#endif
+
 
 typedef const PropertyCallbackInfo<v8::Integer>&
     NAN_PROPERTY_QUERY_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_PROPERTY_QUERY_RETURN_TYPE;
+#else
 typedef void NAN_PROPERTY_QUERY_RETURN_TYPE;
+#endif
 
 typedef const PropertyCallbackInfo<v8::Value>& NAN_INDEX_GETTER_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_INDEX_GETTER_RETURN_TYPE;
+#else
 typedef void NAN_INDEX_GETTER_RETURN_TYPE;
+#endif
 
+
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef const PropertyCallbackInfo<void>& NAN_INDEX_SETTER_ARGS_TYPE;
+typedef v8::Intercepted NAN_INDEX_SETTER_RETURN_TYPE;
+#else
 typedef const PropertyCallbackInfo<v8::Value>& NAN_INDEX_SETTER_ARGS_TYPE;
 typedef void NAN_INDEX_SETTER_RETURN_TYPE;
+#endif
 
 typedef const PropertyCallbackInfo<v8::Array>&
     NAN_INDEX_ENUMERATOR_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_INDEX_ENUMERATOR_RETURN_TYPE;
+#else
 typedef void NAN_INDEX_ENUMERATOR_RETURN_TYPE;
+#endif
 
 typedef const PropertyCallbackInfo<v8::Boolean>&
     NAN_INDEX_DELETER_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_INDEX_DELETER_RETURN_TYPE;
+#else
 typedef void NAN_INDEX_DELETER_RETURN_TYPE;
+#endif
 
 typedef const PropertyCallbackInfo<v8::Integer>&
     NAN_INDEX_QUERY_ARGS_TYPE;
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 ||                     \
+  (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) && V8_MINOR_VERSION > 4))
+typedef v8::Intercepted NAN_INDEX_QUERY_RETURN_TYPE;
+#else
 typedef void NAN_INDEX_QUERY_RETURN_TYPE;
+#endif
 
 #define NAN_METHOD(name)                                                       \
     Nan::NAN_METHOD_RETURN_TYPE name(Nan::NAN_METHOD_ARGS_TYPE info)
@@ -1621,9 +1832,9 @@ class Callback {
     v8::EscapableHandleScope scope(isolate);
 # if NODE_MODULE_VERSION >= NODE_9_0_MODULE_VERSION
     AsyncResource async("nan:Callback:Call");
-    return Call_(isolate, isolate->GetCurrentContext()->Global(), argc, argv,
-                 &async)
-        .FromMaybe(v8::Local<v8::Value>());
+    return scope.Escape(Call_(isolate, isolate->GetCurrentContext()->Global(),
+                              argc, argv, &async)
+                            .FromMaybe(v8::Local<v8::Value>()));
 # else
     return scope.Escape(
         Call_(isolate, isolate->GetCurrentContext()->Global(), argc, argv));
@@ -1815,36 +2026,41 @@ inline MaybeLocal<v8::Value> Call(
   inline void SaveToPersistent(
       const char *key, const v8::Local<v8::Value> &value) {
     HandleScope scope;
-    New(persistentHandle)->Set(New(key).ToLocalChecked(), value);
+    Set(New(persistentHandle), New(key).ToLocalChecked(), value).FromJust();
   }
 
   inline void SaveToPersistent(
       const v8::Local<v8::String> &key, const v8::Local<v8::Value> &value) {
     HandleScope scope;
-    New(persistentHandle)->Set(key, value);
+    Set(New(persistentHandle), key, value).FromJust();
   }
 
   inline void SaveToPersistent(
       uint32_t index, const v8::Local<v8::Value> &value) {
     HandleScope scope;
-    New(persistentHandle)->Set(index, value);
+    Set(New(persistentHandle), index, value).FromJust();
   }
 
   inline v8::Local<v8::Value> GetFromPersistent(const char *key) const {
     EscapableHandleScope scope;
     return scope.Escape(
-        New(persistentHandle)->Get(New(key).ToLocalChecked()));
+        Get(New(persistentHandle), New(key).ToLocalChecked())
+        .FromMaybe(v8::Local<v8::Value>()));
   }
 
   inline v8::Local<v8::Value>
   GetFromPersistent(const v8::Local<v8::String> &key) const {
     EscapableHandleScope scope;
-    return scope.Escape(New(persistentHandle)->Get(key));
+    return scope.Escape(
+        Get(New(persistentHandle), key)
+        .FromMaybe(v8::Local<v8::Value>()));
   }
 
   inline v8::Local<v8::Value> GetFromPersistent(uint32_t index) const {
     EscapableHandleScope scope;
-    return scope.Escape(New(persistentHandle)->Get(index));
+    return scope.Escape(
+        Get(New(persistentHandle), index)
+        .FromMaybe(v8::Local<v8::Value>()));
   }
 
   virtual void Execute() = 0;
@@ -1899,7 +2115,7 @@ inline MaybeLocal<v8::Value> Call(
       const char* resource_name = "nan:AsyncBareProgressWorkerBase")
       : AsyncWorker(callback_, resource_name) {
     uv_async_init(
-        uv_default_loop()
+        GetCurrentEventLoop()
       , &async
       , AsyncProgress_
     );
@@ -1940,16 +2156,20 @@ class AsyncBareProgressWorker : public AsyncBareProgressWorkerBase {
       Callback *callback_,
       const char* resource_name = "nan:AsyncBareProgressWorker")
       : AsyncBareProgressWorkerBase(callback_, resource_name) {
+    uv_mutex_init(&async_lock);
   }
 
   virtual ~AsyncBareProgressWorker() {
+    uv_mutex_destroy(&async_lock);
   }
 
   class ExecutionProgress {
     friend class AsyncBareProgressWorker;
    public:
     void Signal() const {
+      uv_mutex_lock(&that_->async_lock);
       uv_async_send(&that_->async);
+      uv_mutex_unlock(&that_->async_lock);
     }
 
     void Send(const T* data, size_t count) const {
@@ -1964,6 +2184,9 @@ class AsyncBareProgressWorker : public AsyncBareProgressWorkerBase {
 
   virtual void Execute(const ExecutionProgress& progress) = 0;
   virtual void HandleProgressCallback(const T *data, size_t size) = 0;
+
+ protected:
+  uv_mutex_t async_lock;
 
  private:
   void Execute() /*final override*/ {
@@ -1983,21 +2206,19 @@ class AsyncProgressWorkerBase : public AsyncBareProgressWorker<T> {
       const char* resource_name = "nan:AsyncProgressWorkerBase")
       : AsyncBareProgressWorker<T>(callback_, resource_name), asyncdata_(NULL),
         asyncsize_(0) {
-    uv_mutex_init(&async_lock);
   }
 
   virtual ~AsyncProgressWorkerBase() {
-    uv_mutex_destroy(&async_lock);
-
     delete[] asyncdata_;
   }
 
   void WorkProgress() {
-    uv_mutex_lock(&async_lock);
+    uv_mutex_lock(&this->async_lock);
     T *data = asyncdata_;
     size_t size = asyncsize_;
     asyncdata_ = NULL;
-    uv_mutex_unlock(&async_lock);
+    asyncsize_ = 0;
+    uv_mutex_unlock(&this->async_lock);
 
     // Don't send progress events after we've already completed.
     if (this->callback) {
@@ -2009,22 +2230,18 @@ class AsyncProgressWorkerBase : public AsyncBareProgressWorker<T> {
  private:
   void SendProgress_(const T *data, size_t count) {
     T *new_data = new T[count];
-    {
-      T *it = new_data;
-      std::copy(data, data + count, it);
-    }
+    std::copy(data, data + count, new_data);
 
-    uv_mutex_lock(&async_lock);
+    uv_mutex_lock(&this->async_lock);
     T *old_data = asyncdata_;
     asyncdata_ = new_data;
     asyncsize_ = count;
-    uv_mutex_unlock(&async_lock);
+    uv_async_send(&this->async);
+    uv_mutex_unlock(&this->async_lock);
 
     delete[] old_data;
-    uv_async_send(&this->async);
   }
 
-  uv_mutex_t async_lock;
   T *asyncdata_;
   size_t asyncsize_;
 };
@@ -2132,10 +2349,7 @@ class AsyncProgressQueueWorker : public AsyncBareProgressQueueWorker<T> {
  private:
   void SendProgress_(const T *data, size_t count) {
     T *new_data = new T[count];
-    {
-      T *it = new_data;
-      std::copy(data, data + count, it);
-    }
+    std::copy(data, data + count, new_data);
 
     uv_mutex_lock(&async_lock);
     asyncdata_.push(std::pair<T*, size_t>(new_data, count));
@@ -2153,18 +2367,25 @@ inline void AsyncExecute (uv_work_t* req) {
   worker->Execute();
 }
 
-inline void AsyncExecuteComplete (uv_work_t* req) {
+/* uv_after_work_cb has 1 argument before node-v0.9.4 and
+ * 2 arguments since node-v0.9.4
+ * https://github.com/libuv/libuv/commit/92fb84b751e18f032c02609467f44bfe927b80c5
+ */
+inline void AsyncExecuteComplete(uv_work_t *req) {
   AsyncWorker* worker = static_cast<AsyncWorker*>(req->data);
   worker->WorkComplete();
   worker->Destroy();
 }
+inline void AsyncExecuteComplete (uv_work_t* req, int status) {
+  AsyncExecuteComplete(req);
+}
 
 inline void AsyncQueueWorker (AsyncWorker* worker) {
   uv_queue_work(
-      uv_default_loop()
+      GetCurrentEventLoop()
     , &worker->request
     , AsyncExecute
-    , reinterpret_cast<uv_after_work_cb>(AsyncExecuteComplete)
+    , AsyncExecuteComplete
   );
 }
 
@@ -2198,6 +2419,33 @@ enum Encoding {ASCII, UTF8, BASE64, UCS2, BINARY, HEX, BUFFER};
 # include "nan_string_bytes.h"  // NOLINT(build/include)
 #endif
 
+#if NODE_MAJOR_VERSION >= 24
+inline MaybeLocal<v8::Value> TryEncode(
+    const void *buf, size_t len, enum Encoding encoding = BINARY) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  node::encoding node_enc = static_cast<node::encoding>(encoding);
+
+  if (encoding == UCS2) {
+    return node::TryEncode(
+        isolate
+      , reinterpret_cast<const uint16_t *>(buf)
+      , len / 2);
+  } else {
+    return node::TryEncode(
+        isolate
+      , reinterpret_cast<const char *>(buf)
+      , len
+      , node_enc);
+  }
+}
+
+inline v8::Local<v8::Value> Encode(
+    const void *buf, size_t len, enum Encoding encoding = BINARY) {
+  return TryEncode(buf, len, encoding).ToLocalChecked();
+}
+
+#else
+
 inline v8::Local<v8::Value> Encode(
     const void *buf, size_t len, enum Encoding encoding = BINARY) {
 #if (NODE_MODULE_VERSION >= ATOM_0_21_MODULE_VERSION)
@@ -2229,6 +2477,7 @@ inline v8::Local<v8::Value> Encode(
 # endif
 #endif
 }
+#endif
 
 inline ssize_t DecodeBytes(
     v8::Local<v8::Value> val, enum Encoding encoding = BINARY) {
@@ -2334,7 +2583,7 @@ SetMethodAux(T recv,
              v8::Local<v8::String> name,
              v8::Local<v8::FunctionTemplate> tpl,
              ...) {
-  recv->Set(name, GetFunction(tpl).ToLocalChecked());
+  Set(recv, name, GetFunction(tpl).ToLocalChecked());
 }
 
 }  // end of namespace imp
@@ -2343,9 +2592,10 @@ template <typename T, template <typename> class HandleType>
 inline void SetMethod(
     HandleType<T> recv
   , const char *name
-  , FunctionCallback callback) {
+  , FunctionCallback callback
+  , v8::Local<v8::Value> data = v8::Local<v8::Value>()) {
   HandleScope scope;
-  v8::Local<v8::FunctionTemplate> t = New<v8::FunctionTemplate>(callback);
+  v8::Local<v8::FunctionTemplate> t = New<v8::FunctionTemplate>(callback, data);
   v8::Local<v8::String> fn_name = New(name).ToLocalChecked();
   t->SetClassName(fn_name);
   // Note(@agnat): Pass an empty T* as discriminator. See note on
@@ -2355,11 +2605,13 @@ inline void SetMethod(
 
 inline void SetPrototypeMethod(
     v8::Local<v8::FunctionTemplate> recv
-  , const char* name, FunctionCallback callback) {
+  , const char* name
+  , FunctionCallback callback
+  , v8::Local<v8::Value> data = v8::Local<v8::Value>()) {
   HandleScope scope;
   v8::Local<v8::FunctionTemplate> t = New<v8::FunctionTemplate>(
       callback
-    , v8::Local<v8::Value>()
+    , data
     , New<v8::Signature>(recv));
   v8::Local<v8::String> fn_name = New(name).ToLocalChecked();
   recv->PrototypeTemplate()->Set(fn_name, t);
@@ -2368,15 +2620,15 @@ inline void SetPrototypeMethod(
 
 //=== Accessors and Such =======================================================
 
-inline void SetAccessor(
+NAN_DEPRECATED inline void SetAccessor(
     v8::Local<v8::ObjectTemplate> tpl
   , v8::Local<v8::String> name
   , GetterCallback getter
-  , SetterCallback setter = 0
-  , v8::Local<v8::Value> data = v8::Local<v8::Value>()
-  , v8::AccessControl settings = v8::DEFAULT
-  , v8::PropertyAttribute attribute = v8::None
-  , imp::Sig signature = imp::Sig()) {
+  , SetterCallback setter
+  , v8::Local<v8::Value> data
+  , v8::AccessControl settings
+  , v8::PropertyAttribute attribute
+  , imp::Sig signature) {
   HandleScope scope;
 
   imp::NativeGetter getter_ =
@@ -2402,14 +2654,80 @@ inline void SetAccessor(
     obj->SetInternalField(imp::kDataIndex, data);
   }
 
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 \
+            || (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) \
+            && V8_MINOR_VERSION >= 5))
+  tpl->SetNativeDataProperty(
+#else
   tpl->SetAccessor(
+#endif
       name
     , getter_
     , setter_
     , obj
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION < 12 \
+            || (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) \
+            && V8_MINOR_VERSION == 0))
     , settings
+#endif
     , attribute
-    , signature);
+#if (NODE_MODULE_VERSION < NODE_16_0_MODULE_VERSION)
+    , signature
+#endif
+  );
+}
+
+inline void SetAccessor(
+    v8::Local<v8::ObjectTemplate> tpl
+  , v8::Local<v8::String> name
+  , GetterCallback getter
+  , SetterCallback setter = 0
+  , v8::Local<v8::Value> data = v8::Local<v8::Value>()
+  , v8::AccessControl settings = v8::DEFAULT
+  , v8::PropertyAttribute attribute = v8::None) {
+  HandleScope scope;
+
+  imp::NativeGetter getter_ =
+      imp::GetterCallbackWrapper;
+  imp::NativeSetter setter_ =
+      setter ? imp::SetterCallbackWrapper : 0;
+
+  v8::Local<v8::ObjectTemplate> otpl = New<v8::ObjectTemplate>();
+  otpl->SetInternalFieldCount(imp::kAccessorFieldCount);
+  v8::Local<v8::Object> obj = NewInstance(otpl).ToLocalChecked();
+
+  obj->SetInternalField(
+      imp::kGetterIndex
+    , New<v8::External>(reinterpret_cast<void *>(getter)));
+
+  if (setter != 0) {
+    obj->SetInternalField(
+        imp::kSetterIndex
+      , New<v8::External>(reinterpret_cast<void *>(setter)));
+  }
+
+  if (!data.IsEmpty()) {
+    obj->SetInternalField(imp::kDataIndex, data);
+  }
+
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION > 12 \
+            || (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) \
+            && V8_MINOR_VERSION >= 5))
+  tpl->SetNativeDataProperty(
+#else
+  tpl->SetAccessor(
+#endif
+      name
+    , getter_
+    , setter_
+    , obj
+#if defined(V8_MAJOR_VERSION) && (V8_MAJOR_VERSION < 12 \
+            || (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) \
+            && V8_MINOR_VERSION == 0))
+    , settings
+#endif
+    , attribute
+  );
 }
 
 inline bool SetAccessor(
@@ -2446,6 +2764,18 @@ inline bool SetAccessor(
   }
 
 #if (NODE_MODULE_VERSION >= NODE_6_0_MODULE_VERSION)
+#if defined(V8_MAJOR_VERSION) &&                                               \
+    (V8_MAJOR_VERSION > 12 ||                                                  \
+     (V8_MAJOR_VERSION == 12 && defined(V8_MINOR_VERSION) &&                   \
+      V8_MINOR_VERSION >= 5))
+  return obj->SetNativeDataProperty(
+      GetCurrentContext()
+    , name
+    , getter_
+    , setter_
+    , dataobj
+    , attribute).FromMaybe(false);
+#else
   return obj->SetAccessor(
       GetCurrentContext()
     , name
@@ -2454,6 +2784,7 @@ inline bool SetAccessor(
     , dataobj
     , settings
     , attribute).FromMaybe(false);
+#endif
 #else
   return obj->SetAccessor(
       name
@@ -2650,15 +2981,15 @@ inline void SetCallAsFunctionHandler(
 
 //=== Weak Persistent Handling =================================================
 
-#include "nan_weak.h"  // NOLINT(build/include)
+#include "nan_weak.h"  // NOLINT(build/include_subdir)
 
 //=== ObjectWrap ===============================================================
 
-#include "nan_object_wrap.h"  // NOLINT(build/include)
+#include "nan_object_wrap.h"  // NOLINT(build/include_subdir)
 
 //=== HiddenValue/Private ======================================================
 
-#include "nan_private.h"  // NOLINT(build/include)
+#include "nan_private.h"  // NOLINT(build/include_subdir)
 
 //=== Export ==================================================================
 
@@ -2681,7 +3012,7 @@ struct Tap {
     t_.Reset(To<v8::Object>(t).ToLocalChecked());
   }
 
-  ~Tap() { t_.Reset(); }  // not sure if neccessary
+  ~Tap() { t_.Reset(); }  // not sure if necessary
 
   inline void plan(int i) {
     HandleScope scope;
@@ -2750,11 +3081,15 @@ MakeMaybe(MaybeMaybe<T> v) {
 
 //=== TypedArrayContents =======================================================
 
-#include "nan_typedarray_contents.h"  // NOLINT(build/include)
+#include "nan_typedarray_contents.h"  // NOLINT(build/include_subdir)
 
 //=== JSON =====================================================================
 
-#include "nan_json.h"  // NOLINT(build/include)
+#include "nan_json.h"  // NOLINT(build/include_subdir)
+
+//=== ScriptOrigin =============================================================
+
+#include "nan_scriptorigin.h"  // NOLINT(build/include_subdir)
 
 }  // end of namespace Nan
 
